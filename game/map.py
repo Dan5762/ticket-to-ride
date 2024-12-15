@@ -1,14 +1,27 @@
 import math
 import random
 import os
-from typing import List, Dict
+from typing import List, Dict, Tuple
 import cairosvg
 from PIL import Image
-
 from game.utils import Route, DestinationTicket, City, CardColor
 
 
 class TicketToRideMap:
+    # Update color mapping - GREY routes should be solid gray, only WILD should be striped
+    COLOR_MAP = {
+        CardColor.RED: "#F44336",
+        CardColor.BLUE: "#2196F3",
+        CardColor.GREEN: "#4CAF50",
+        CardColor.YELLOW: "#FFC107",
+        CardColor.BLACK: "#212121",
+        CardColor.WHITE: "#FAFAFA",
+        CardColor.ORANGE: "#FF9800",
+        CardColor.PINK: "#E91E63",
+        CardColor.WILD: "url(#wildPattern)",  # Striped pattern for wild only
+        CardColor.GREY: "#757575"  # Solid gray for grey routes
+    }
+
     def __init__(self):
         # Initialize basic US map
         self.cities: Dict[str, City] = {
@@ -22,6 +35,9 @@ class TicketToRideMap:
             "Denver": City("Denver", 60, 70),
             "Helena": City("Helena", 50, 30),
             "Omaha": City("Omaha", 80, 60),
+            "Kansas City": City("Kansas City", 75, 70),  # New city
+            "Dallas": City("Dallas", 70, 95),  # New city
+            "Atlanta": City("Atlanta", 100, 85),  # New city
             "Chicago": City("Chicago", 100, 50),
             "Saint Louis": City("Saint Louis", 90, 70),
             "New Orleans": City("New Orleans", 90, 100),
@@ -32,6 +48,7 @@ class TicketToRideMap:
 
         self.routes: List[Route] = self._initialize_routes()
         self.destination_tickets: List[DestinationTicket] = self._initialize_destination_tickets()
+        self.drawn_tickets = []  # Keep track of drawn destination tickets
 
     def _initialize_routes(self) -> List[Route]:
         """Initialize the basic routes on the map."""
@@ -51,18 +68,32 @@ class TicketToRideMap:
 
             Route("Las Vegas", "Salt Lake City", 3, CardColor.ORANGE),
             Route("Las Vegas", "Phoenix", 2, CardColor.WILD),
+            Route("Phoenix", "Denver", 3, CardColor.WHITE),  # Add Phoenix-Denver route
 
             Route("Salt Lake City", "Denver", 3, CardColor.RED),
             Route("Salt Lake City", "Helena", 3, CardColor.PINK),
 
             Route("Denver", "Omaha", 4, CardColor.PINK),
+            Route("Denver", "Kansas City", 2, CardColor.BLACK),  # New route
+            Route("Denver", "Dallas", 4, CardColor.RED),  # New route
             Route("Denver", "Helena", 4, CardColor.GREEN),
-            Route("Denver", "New Orleans", 5, CardColor.ORANGE),
+            Route("Helena", "Chicago", 6, CardColor.BLACK),  # Add Helena-Chicago route
+
+            Route("Kansas City", "Omaha", 1, CardColor.GREY),  # New route
+            Route("Kansas City", "Saint Louis", 2, CardColor.BLUE),  # New route
+            Route("Kansas City", "Dallas", 3, CardColor.GREY),  # New route
+
+            Route("Dallas", "New Orleans", 3, CardColor.RED),  # New route
+
+            Route("Atlanta", "Miami", 5, CardColor.BLUE),  # New route
+            Route("Atlanta", "New Orleans", 4, CardColor.YELLOW),  # New route
+            Route("Atlanta", "New York", 6, CardColor.GREEN),  # New route
 
             Route("Omaha", "Chicago", 4, CardColor.BLUE),
 
             Route("Chicago", "Saint Louis", 3, CardColor.GREEN),
             Route("Chicago", "New York", 5, CardColor.WHITE),
+            Route("Chicago", "New York", 4, CardColor.PINK),  # Added second Chicago-New York route
 
             Route("Saint Louis", "New Orleans", 4, CardColor.GREEN),
 
@@ -83,15 +114,26 @@ class TicketToRideMap:
     def _initialize_destination_tickets(self) -> List[DestinationTicket]:
         """Initialize the destination tickets."""
         return [
-            DestinationTicket("Seattle", "New York", 22),
+            # Shorter routes with balanced point values
+            DestinationTicket("Seattle", "Helena", 8),
+            DestinationTicket("Portland", "Salt Lake City", 8),
+            DestinationTicket("San Francisco", "Las Vegas", 7),
+            DestinationTicket("Los Angeles", "Phoenix", 6),
+            DestinationTicket("Salt Lake City", "Denver", 7),
+            DestinationTicket("Phoenix", "Denver", 8),
+            DestinationTicket("Helena", "Omaha", 8),
+            DestinationTicket("Denver", "Kansas City", 7),
+            DestinationTicket("Omaha", "Chicago", 8),
+            DestinationTicket("Kansas City", "Saint Louis", 6),
+            DestinationTicket("Dallas", "New Orleans", 8),
+            DestinationTicket("Atlanta", "Miami", 9),
+            # A few medium-length routes
+            DestinationTicket("Chicago", "New York", 12),
+            DestinationTicket("Saint Louis", "New Orleans", 10),
+            DestinationTicket("Atlanta", "New Orleans", 10),
+            # Only a couple of long routes for ambitious players
             DestinationTicket("Los Angeles", "Chicago", 16),
-            DestinationTicket("Denver", "Miami", 20),
-            DestinationTicket("Portland", "Phoenix", 11),
-            DestinationTicket("San Francisco", "Boston", 25),
-            DestinationTicket("Salt Lake City", "New Orleans", 15),
-            DestinationTicket("Helena", "Miami", 20),
-            DestinationTicket("Chicago", "New Orleans", 7),
-            DestinationTicket("New York", "Los Angeles", 21)
+            DestinationTicket("Seattle", "New York", 20),
         ]
 
     def get_available_routes(self, city: str) -> List[Route]:
@@ -117,7 +159,15 @@ class TicketToRideMap:
                 color_count[card] = color_count.get(card, 0) + 1
 
         needed = route.length
-        if route.color != CardColor.WILD:
+        if route.color == CardColor.GREY:
+            # Grey routes can be claimed with any set of same-colored cards
+            # Check each color (excluding wild) to see if we have enough
+            for color, count in color_count.items():
+                if color != CardColor.WILD:
+                    if count + wild_count >= route.length:
+                        return True
+            return False
+        elif route.color != CardColor.WILD:
             # For colored routes, first try to use matching cards
             available = color_count.get(route.color, 0)
             needed -= available
@@ -138,6 +188,37 @@ class TicketToRideMap:
         spent_cards = []
         remaining_length = route.length
 
+        if route.color == CardColor.GREY:
+            # Find the color we have the most of
+            color_counts = {}
+            for card in hand:
+                if card != CardColor.WILD:
+                    color_counts[card] = color_counts.get(card, 0) + 1
+
+            if not color_counts:  # Only wild cards
+                chosen_color = CardColor.WILD
+            else:
+                chosen_color = max(color_counts.items(), key=lambda x: x[1])[0]
+
+            # Use chosen color cards first
+            matching_cards = [c for c in hand if c == chosen_color]
+            while matching_cards and remaining_length > 0:
+                card = matching_cards.pop()
+                hand.remove(card)
+                spent_cards.append(card)
+                remaining_length -= 1
+
+            # Then use wild cards if needed
+            wild_cards = [c for c in hand if c == CardColor.WILD]
+            while wild_cards and remaining_length > 0:
+                card = wild_cards.pop()
+                hand.remove(card)
+                spent_cards.append(card)
+                remaining_length -= 1
+
+            return spent_cards
+
+        # For colored or wild routes, use existing logic
         # For colored routes, first use matching cards
         if route.color != CardColor.WILD:
             matching_cards = [c for c in hand if c == route.color]
@@ -228,6 +309,11 @@ class TicketToRideMap:
         self.drawn_tickets.extend(drawn)
         return drawn
 
+    def return_destination_ticket(self, ticket: DestinationTicket):
+        """Return an unkept destination ticket to the pool."""
+        if ticket in self.drawn_tickets:
+            self.drawn_tickets.remove(ticket)
+
     def calculate_route_points(self, route: Route) -> int:
         """Calculate points for a claimed route based on its length."""
         points_table = {
@@ -242,198 +328,150 @@ class TicketToRideMap:
         }
         return points_table.get(route.length, 0)
 
-    def render_svg(self, width: int = 800, height: int = 600, turn_number: int = None, player_hands=None) -> str:
-        # Add extra height for player hands section
-        total_height = height + 100  # Extra 100px for hands section
+    def _get_svg_dimensions(self, width: int, height: int) -> Tuple[int, int, int]:
+        """Calculate dimensions for SVG rendering."""
+        player_section_height = 250
+        header_height = 100  # Increased from 50 to 100
+        map_height = height - header_height
+        total_height = height + player_section_height
+        return height, map_height, total_height
 
-        # Calculate scaling factors to fit the map in the viewport
+    def _get_coordinate_transformer(self, width: int, map_height: int) -> callable:
+        """Create coordinate transformation function with current scaling."""
         x_values = [city.x for city in self.cities.values()]
         y_values = [city.y for city in self.cities.values()]
-
         min_x, max_x = min(x_values), max(x_values)
         min_y, max_y = min(y_values), max(y_values)
 
-        padding = 20
-        viewport_width = width - 2 * padding
-        viewport_height = height - 2 * padding
+        # Scale to 90% of width/height to leave margin
+        viewport_width = width * 0.9
+        viewport_height = map_height * 0.9
 
         scale_x = viewport_width / (max_x - min_x)
         scale_y = viewport_height / (max_y - min_y)
         scale = min(scale_x, scale_y)
 
         def transform_coordinate(x: float, y: float) -> tuple[float, float]:
-            """Transform game coordinates to SVG coordinates"""
+            """Transform coordinates to fit map exactly in viewport"""
+            scaled_width = (max_x - min_x) * scale
+            scaled_height = (max_y - min_y) * scale
+            # Center the map horizontally and add more vertical offset
+            x_offset = (width - scaled_width) / 2
+            y_offset = 100  # Match the new header_height value
             return (
-                (x - min_x) * scale + padding,
-                (y - min_y) * scale + padding
+                (x - min_x) * scale + x_offset,
+                (y - min_y) * scale + y_offset
             )
 
-        # Start SVG with new height
+        return transform_coordinate
+
+    def _draw_route(self, route: Route, transform_coord: callable, svg_elements: list):
+        """Draw a single route on the map."""
+        city1, city2 = self.cities[route.city1], self.cities[route.city2]
+        x1, y1 = transform_coord(city1.x, city1.y)
+        x2, y2 = transform_coord(city2.x, city2.y)
+
+        dx, dy = x2 - x1, y2 - y1
+        length = (dx * dx + dy * dy) ** 0.5
+        angle = math.atan2(dy, dx) * 180 / math.pi
+
+        # Use slightly darker gray for GREY routes to make them more visible
+        color = "#757575" if route.color == CardColor.GREY else self.COLOR_MAP.get(route.color, "#9E9E9E")
+        segment_length = length / route.length
+        car_width = segment_length * 0.8
+        car_height = 12
+
+        # Draw route group
+        svg_elements.append(f'<g transform="translate({x1},{y1}) rotate({angle})">')
+        svg_elements.append(
+            f'<line x1="0" y1="0" x2="{length}" y2="0" '
+            f'stroke="{color}" stroke-width="{car_height}" stroke-opacity="0.2"/>'
+        )
+
+        if route.claimed_by is not None:
+            player_color = self.COLOR_MAP[CardColor(list(CardColor)[route.claimed_by].value)]
+            for i in range(route.length):
+                x_offset = i * segment_length
+                # Draw train car
+                svg_elements.append(
+                    f'<rect x="{x_offset}" y="{-car_height / 2}" '
+                    f'width="{car_width}" height="{car_height}" '
+                    f'fill="{player_color}" rx="2"/>'
+                )
+                # Draw wheels
+                for wheel_pos in [0.25, 0.75]:
+                    svg_elements.append(
+                        f'<circle cx="{x_offset + car_width * wheel_pos}" '
+                        f'cy="{car_height / 2 - 1}" r="{car_height / 4}" fill="black"/>'
+                    )
+
+        svg_elements.append('</g>')
+
+        # Add route length
+        text_offset = 15
+        mid_x = (x1 + x2) / 2
+        mid_y = (y1 + y2) / 2
+        text_x = mid_x + text_offset * math.sin(math.radians(angle))
+        text_y = mid_y - text_offset * math.cos(math.radians(angle))
+
+        # Draw route length with outline
+        for stroke in [True, False]:
+            attrs = 'stroke="white" stroke-width="2" stroke-linejoin="round"' if stroke else 'fill="black"'
+            svg_elements.append(
+                f'<text x="{text_x}" y="{text_y}" '
+                f'font-size="14" font-weight="bold" text-anchor="middle" '
+                f'{attrs}>{route.length}</text>'
+            )
+
+    def render_svg(self, width: int = 800, height: int = 600, turn_number: int = None,
+                   player_hands=None, current_player: int = None, face_up_cards=None) -> str:
+        base_height, map_height, total_height = self._get_svg_dimensions(width, height)
+        transform_coord = self._get_coordinate_transformer(width, map_height)
+
+        # Initialize SVG
         svg_elements = [
             '<?xml version="1.0" encoding="UTF-8"?>',
             f'<svg viewBox="0 0 {width} {total_height}" xmlns="http://www.w3.org/2000/svg">',
+            self._get_svg_defs(),
             f'<rect width="{width}" height="{total_height}" fill="#f0f0f0"/>'
         ]
 
-        # Add turn number if provided (now in top right)
-        if turn_number is not None:
-            svg_elements.extend([
-                f'<text x="{width - 20}" y="30" font-size="24" font-weight="bold" '
-                f'stroke="white" stroke-width="3" stroke-linejoin="round" text-anchor="end">Turn {turn_number}</text>',
-                f'<text x="{width - 20}" y="30" font-size="24" font-weight="bold" '
-                f'fill="black" text-anchor="end">Turn {turn_number}</text>'
-            ])
+        # Draw map elements
+        self._draw_face_up_cards(svg_elements, face_up_cards, width)
+        self._draw_turn_number(svg_elements, turn_number, width)
 
-        # Color mapping for route colors
-        color_map = {
-            CardColor.RED: "#F44336",
-            CardColor.BLUE: "#2196F3",
-            CardColor.GREEN: "#4CAF50",
-            CardColor.YELLOW: "#FFC107",
-            CardColor.BLACK: "#212121",
-            CardColor.WHITE: "#FAFAFA",
-            CardColor.ORANGE: "#FF9800",
-            CardColor.PINK: "#E91E63",
-            CardColor.WILD: "#9E9E9E",
-            CardColor.GREY: "#9E9E9E"
-        }
-
-        # Draw routes
+        # Draw routes and cities
         for route in self.routes:
-            city1 = self.cities[route.city1]
-            city2 = self.cities[route.city2]
-            x1, y1 = transform_coordinate(city1.x, city1.y)
-            x2, y2 = transform_coordinate(city2.x, city2.y)
+            self._draw_route(route, transform_coord, svg_elements)
 
-            # Calculate route properties
-            dx = x2 - x1
-            dy = y2 - y1
-            length = (dx * dx + dy * dy) ** 0.5
-            angle = math.atan2(dy, dx) * 180 / math.pi
-
-            # Draw route background
-            color = color_map.get(route.color, "#9E9E9E")
-
-            # Define segment dimensions
-            segment_length = length / route.length
-            car_width = segment_length * 0.8  # Leave small gap between cars
-            car_height = 12
-
-            # Create a group for the route with rotation transform
-            svg_elements.append(f'<g transform="translate({x1},{y1}) rotate({angle})">')
-
-            # Background route (always visible, faint)
-            svg_elements.append(
-                f'<line x1="0" y1="0" x2="{length}" y2="0" '
-                f'stroke="{color}" stroke-width="{car_height}" stroke-opacity="0.2"/>'
-            )
-
-            # Draw individual train car segments
-            for i in range(route.length):
-                x_offset = i * segment_length
-
-                if route.claimed_by is not None:
-                    # Draw train car shape for claimed routes
-                    player_color = list(CardColor)[route.claimed_by].value
-                    # Train car body
-                    svg_elements.append(
-                        f'<rect x="{x_offset}" y="{-car_height / 2}" '
-                        f'width="{car_width}" height="{car_height}" '
-                        f'fill="{color_map[CardColor(player_color)]}" rx="2"/>'
-                    )
-                    # Add train details (optional)
-                    wheel_radius = car_height / 4
-                    svg_elements.append(
-                        f'<circle cx="{x_offset + car_width * 0.25}" cy="{car_height / 2 - 1}" '
-                        f'r="{wheel_radius}" fill="black"/>'
-                    )
-                    svg_elements.append(
-                        f'<circle cx="{x_offset + car_width * 0.75}" cy="{car_height / 2 - 1}" '
-                        f'r="{wheel_radius}" fill="black"/>'
-                    )
-
-            # Close the route group
-            svg_elements.append('</g>')
-
-            # Add route length number
-            mid_x = (x1 + x2) / 2
-            mid_y = (y1 + y2) / 2
-            # Offset the text slightly perpendicular to the route
-            text_offset = 15
-            text_x = mid_x + text_offset * math.sin(math.radians(angle))
-            text_y = mid_y - text_offset * math.cos(math.radians(angle))
-
-            svg_elements.append(
-                f'<text x="{text_x}" y="{text_y}" '
-                f'font-size="14" font-weight="bold" text-anchor="middle" '
-                f'fill="black" stroke="white" stroke-width="2" stroke-linejoin="round">'
-                f'{route.length}</text>'
-            )
-            svg_elements.append(
-                f'<text x="{text_x}" y="{text_y}" '
-                f'font-size="14" font-weight="bold" text-anchor="middle" '
-                f'fill="black">{route.length}</text>'
-            )
-
-        # Draw cities
         for name, city in self.cities.items():
-            x, y = transform_coordinate(city.x, city.y)
-            # City circle with white outline for visibility
-            svg_elements.append(
-                f'<circle cx="{x}" cy="{y}" r="8" '
-                f'fill="white" stroke="black" stroke-width="2"/>'
-            )
-            # City name with white outline for visibility
-            svg_elements.append(
-                f'<text x="{x}" y="{y - 12}" '
-                f'font-size="12" font-weight="bold" text-anchor="middle" '
-                f'stroke="white" stroke-width="3" stroke-linejoin="round">{name}</text>'
-            )
-            svg_elements.append(
-                f'<text x="{x}" y="{y - 12}" '
-                f'font-size="12" font-weight="bold" text-anchor="middle" '
-                f'fill="black">{name}</text>'
-            )
+            self._draw_city(city, name, transform_coord, svg_elements)
 
-        # After drawing the map, add player hands at the bottom
+        # Draw player sections
         if player_hands:
-            section_width = width / len(player_hands)
-            card_width = 20
-            card_height = 30
-            cards_y = height + 30  # Start 30px below the map
+            self._draw_player_sections(svg_elements, player_hands, current_player,
+                                       width, base_height)
 
-            for player_id, hand in player_hands.items():
-                # Calculate section position
-                section_x = player_id * section_width
-
-                # Add player label
-                svg_elements.append(
-                    f'<text x="{section_x + section_width / 2}" y="{height + 20}" '
-                    f'font-size="16" font-weight="bold" text-anchor="middle">Player {player_id}</text>'
-                )
-
-                # Draw cards in hand
-                for i, card in enumerate(hand):
-                    x = section_x + 10 + (i * (card_width + 5))  # 5px gap between cards
-                    card_color = color_map.get(card, "#9E9E9E")
-
-                    # Card with border
-                    svg_elements.append(
-                        f'<rect x="{x}" y="{cards_y}" width="{card_width}" height="{card_height}" '
-                        f'fill="{card_color}" stroke="black" stroke-width="1" rx="2"/>'
-                    )
-
-        # Close SVG
         svg_elements.append('</svg>')
-
         return '\n'.join(svg_elements)
 
-    def render_svg_to_file(self, filename: str, width: int = 800, height: int = 600, turn_number: int = None, player_hands=None):
+    def _get_svg_defs(self) -> str:
+        """Get SVG definitions including patterns."""
+        return '''<defs>
+            <pattern id="wildPattern" patternUnits="userSpaceOnUse" width="10" height="10">
+                <rect width="10" height="10" fill="white"/>
+                <path d="M-1,1 l2,-2 M0,10 l10,-10 M9,11 l2,-2" stroke="black" stroke-width="2"/>
+            </pattern>
+        </defs>'''
+
+    def render_svg_to_file(self, filename: str, width: int = 800, height: int = 600,
+                           turn_number: int = None, player_hands=None, current_player: int = None,
+                           face_up_cards=None):
         """Render the map to an SVG file."""
         with open(filename, 'w') as f:
-            f.write(self.render_svg(width, height, turn_number, player_hands))
+            f.write(self.render_svg(width, height, turn_number, player_hands, current_player, face_up_cards))
 
-    def create_game_gif(self, svg_files: List[str], output_file: str = "game_replay.gif", duration: int = 1000):
+    def create_game_gif(self, svg_files: List[str], output_file: str = "game_replay.gif", duration: int = 200):
         """
         Create a GIF from a series of SVG files, with each frame lasting for the specified duration.
 
@@ -442,17 +480,29 @@ class TicketToRideMap:
             output_file: Output GIF filename
             duration: Duration for each frame in milliseconds
         """
+        print("\nGenerating game replay GIF...")
+        print("[", end="", flush=True)
+
         # Create temporary directory for PNG files
         temp_dir = "temp"
         if not os.path.exists(temp_dir):
             os.makedirs(temp_dir)
 
-        # Convert SVGs to PNGs
+        # Convert SVGs to PNGs with progress indicator
         png_files = []
         for i, svg_file in enumerate(svg_files):
             png_file = os.path.join(temp_dir, f"frame_{i}.png")
             cairosvg.svg2png(url=svg_file, write_to=png_file)
             png_files.append(png_file)
+
+            # Print progress bar
+            progress = (i + 1) / len(svg_files)
+            bar_width = 40
+            position = int(progress * bar_width)
+            print("\r[" + "=" * position + ">" + " " * (bar_width - position - 1) + "]" +
+                  f" {int(progress * 100)}%", end="", flush=True)
+
+        print("\nCombining frames into GIF...")
 
         # Create GIF from PNGs
         frames = [Image.open(f) for f in png_files]
@@ -468,3 +518,110 @@ class TicketToRideMap:
         for f in png_files:
             os.remove(f)
         os.rmdir(temp_dir)
+
+        print(f"Game replay saved as {output_file}")
+
+    def _draw_face_up_cards(self, svg_elements: list, face_up_cards: list, width: int):
+        """Draw the face-up cards at the top of the display."""
+        if not face_up_cards:
+            return
+
+        card_width = 30
+        card_height = 45
+        card_gap = 5
+        start_x = width - 20 - (5 * (card_width + card_gap))
+        cards_y = 20
+
+        for i, card in enumerate(face_up_cards):
+            x = start_x + i * (card_width + card_gap)
+            card_color = self.COLOR_MAP.get(card, "#9E9E9E")
+            svg_elements.append(
+                f'<rect x="{x}" y="{cards_y}" width="{card_width}" height="{card_height}" '
+                f'fill="{card_color}" stroke="black" stroke-width="1" rx="2"/>'
+            )
+
+    def _draw_turn_number(self, svg_elements: list, turn_number: int, width: int):
+        """Draw the turn number indicator."""
+        if turn_number is None:
+            return
+
+        # Position the turn number at the top left
+        svg_elements.extend([
+            f'<text x="20" y="40" font-size="24" font-weight="bold" '
+            f'stroke="white" stroke-width="3" stroke-linejoin="round" text-anchor="start">Turn {turn_number}</text>',
+            f'<text x="20" y="40" font-size="24" font-weight="bold" '
+            f'fill="black" text-anchor="start">Turn {turn_number}</text>'
+        ])
+
+    def _draw_city(self, city: City, name: str, transform_coord: callable, svg_elements: list):
+        """Draw a city and its name."""
+        x, y = transform_coord(city.x, city.y)
+        svg_elements.append(
+            f'<circle cx="{x}" cy="{y}" r="8" '
+            f'fill="white" stroke="black" stroke-width="2"/>'
+        )
+        svg_elements.append(
+            f'<text x="{x}" y="{y - 12}" '
+            f'font-size="12" font-weight="bold" text-anchor="middle" '
+            f'stroke="white" stroke-width="3" stroke-linejoin="round">{name}</text>'
+        )
+        svg_elements.append(
+            f'<text x="{x}" y="{y - 12}" '
+            f'font-size="12" font-weight="bold" text-anchor="middle" '
+            f'fill="black">{name}</text>'
+        )
+
+    def _draw_player_sections(self, svg_elements: list, player_hands: dict, current_player: int, width: int, base_height: int):
+        """Draw the player sections at the bottom."""
+        section_width = width / len(player_hands)
+        card_width = 20
+        card_height = 30
+        cards_y = base_height + 30
+        cards_per_row = int((section_width - 40) / (card_width + 5))
+
+        for player_id, hand in player_hands.items():
+            section_x = player_id * section_width
+
+            # Draw player header
+            font_weight = "900" if player_id == current_player else "normal"
+            player_color = self.COLOR_MAP[list(CardColor)[player_id]]
+            svg_elements.append(
+                f'<text x="{section_x + section_width / 2}" y="{base_height + 20}" '
+                f'font-size="16" font-weight="{font_weight}" text-anchor="middle" '
+                f'fill="{player_color}">Player {player_id} ({hand.get("points", 0)}pts)</text>'
+            )
+
+            # Draw cards
+            cards = hand.get('cards', [])
+            for i, card in enumerate(cards):
+                row = i // cards_per_row
+                col = i % cards_per_row
+                x = section_x + 10 + (col * (card_width + 5))
+                y = cards_y + (row * (card_height + 5))
+                svg_elements.append(
+                    f'<rect x="{x}" y="{y}" width="{card_width}" height="{card_height}" '
+                    f'fill="{self.COLOR_MAP.get(card, "#9E9E9E")}" stroke="black" stroke-width="1" rx="2"/>'
+                )
+
+            # Calculate vertical position for destination tickets
+            tickets_y = cards_y + ((len(hand.get('cards', [])) - 1) // cards_per_row + 2) * (card_height + 5)
+
+            # Draw destination tickets
+            if 'destination_tickets' in hand and hand['destination_tickets']:
+                svg_elements.append(
+                    f'<text x="{section_x + 10}" y="{tickets_y}" '
+                    f'font-size="12" font-weight="bold" fill="black">Destination Tickets:</text>'
+                )
+                for i, ticket in enumerate(hand['destination_tickets']):
+                    is_completed = self.are_cities_connected(player_id, ticket.city1, ticket.city2)
+                    text_color = "#006400" if is_completed else "#8B0000"  # Dark green if completed, dark red if not
+                    svg_elements.append(
+                        f'<text x="{section_x + 20}" y="{tickets_y + (i + 1) * 20}" '
+                        f'font-size="12" fill="{text_color}">'
+                        f'{ticket.city1} -> {ticket.city2} ({ticket.points} points)</text>'
+                    )
+            else:
+                svg_elements.append(
+                    f'<text x="{section_x + 10}" y="{tickets_y}" '
+                    f'font-size="12" fill="gray">No destination tickets</text>'
+                )

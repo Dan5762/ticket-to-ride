@@ -3,6 +3,13 @@ from enum import Enum
 
 
 class CardColor(Enum):
+    """
+    Colors for train cards and routes.
+    Note: GREY is only used for routes and cannot appear in the deck or player hands.
+    WILD and GREY are special cases:
+    - WILD: Can be used as any color when claiming routes
+    - GREY: Used only for routes that can be claimed with any matching set of colored cards
+    """
     RED = "red"
     BLUE = "blue"
     GREEN = "green"
@@ -12,7 +19,7 @@ class CardColor(Enum):
     ORANGE = "orange"
     PINK = "pink"
     WILD = "wild"
-    GREY = "grey"
+    GREY = "grey"  # Special case: only used for routes, never appears in deck/hands
 
 
 @dataclass
